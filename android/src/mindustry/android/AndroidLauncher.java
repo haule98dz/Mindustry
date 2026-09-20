@@ -21,6 +21,8 @@ import mindustry.net.*;
 import mindustry.ui.*;
 import mindustry.ui.FileChooser.*;
 import mindustry.ui.dialogs.*;
+import mindustry.gen.*;
+import mindustry.graphics.*;
 
 import java.io.*;
 import java.lang.Thread.*;
@@ -33,6 +35,7 @@ public class AndroidLauncher extends AndroidApplication{
     boolean doubleScaleTablets = true;
     FileChooserDialog chooser;
     Runnable permCallback;
+    boolean gameStarted = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState){
@@ -54,6 +57,16 @@ public class AndroidLauncher extends AndroidApplication{
         if(doubleScaleTablets && isTablet(this)){
             Scl.setAddition(0.5f);
         }
+
+        AndroidStorageHelper.checkAndSetupStorage(this, this::startGame);
+    }
+
+    private void startGame(){
+        if(gameStarted) return;
+        gameStarted = true;
+
+        File chosenDataDir = AndroidStorageHelper.getDataDir(this);
+        System.setProperty("mindustry.data.dir", chosenDataDir.getAbsolutePath());
 
         initialize(new ClientLauncher(){
 
@@ -223,11 +236,14 @@ public class AndroidLauncher extends AndroidApplication{
         }});
 
         var intent = getIntent();
-        Events.on(ClientLoadEvent.class, u -> handleIntent(intent));
+        Events.on(ClientLoadEvent.class, u -> {
+            handleIntent(intent);
+            setupStorageSettings();
+        });
 
         try{
-            //new external folder
-            Fi data = Core.files.absolute(((Context)this).getExternalFilesDir(null).getAbsolutePath());
+            //data folder
+            Fi data = Core.files.absolute(chosenDataDir.getAbsolutePath());
             Core.settings.setDataDirectory(data);
 
             //delete unused cache folder to free up space
@@ -265,8 +281,62 @@ public class AndroidLauncher extends AndroidApplication{
         }
     }
 
+    private void setupStorageSettings(){
+        try{
+            ui.settings.addCategory("Storage", Icon.save, t -> {
+                t.add("Game Data Location").color(Pal.accent).left().padTop(6).row();
+                t.add(Core.settings.getDataDirectory().absolutePath()).color(arc.graphics.Color.lightGray).wrap().left().padBottom(10).row();
+
+                t.button("Change Storage Folder", Icon.folder, () -> {
+                    runOnUiThread(() -> AndroidStorageHelper.promptChooseFolder(this, false, newFolder -> {
+                        ui.showConfirm("Restart Required", "Storage folder changed to:\n" + newFolder.getAbsolutePath() + "\n\nPlease restart Mindustry to apply changes.", () -> {
+                            Core.app.exit();
+                        });
+                    }));
+                }).size(280f, 50f).pad(6).row();
+
+                t.button("Copy Data to Another Folder", Icon.copy, () -> {
+                    runOnUiThread(() -> AndroidStorageHelper.promptChooseFolder(this, false, targetFolder -> {
+                        try{
+                            AndroidStorageHelper.copyDirectory(Core.settings.getDataDirectory().file(), targetFolder);
+                            ui.showInfo("Data successfully copied to:\n" + targetFolder.getAbsolutePath());
+                        }catch(Exception e){
+                            Log.err("Failed to copy data", e);
+                            ui.showException(e);
+                        }
+                    }));
+                }).size(280f, 50f).pad(6).row();
+            });
+        }catch(Throwable t){
+            Log.err("Failed to add storage settings category", t);
+        }
+    }
+
+    @Override
+    protected void onPause(){
+        if(graphics != null && input != null){
+            super.onPause();
+        }
+    }
+
+    @Override
+    protected void onResume(){
+        if(graphics != null && input != null){
+            super.onResume();
+        }
+        AndroidStorageHelper.handleResume(this);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data){
+        super.onActivityResult(requestCode, resultCode, data);
+        AndroidStorageHelper.handleActivityResult(this, requestCode, resultCode, data);
+    }
+
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults){
+        AndroidStorageHelper.handlePermissionsResult(this, requestCode, permissions, grantResults);
+
         if(requestCode == PERMISSION_REQUEST_CODE){
             for(int i : grantResults){
                 if(i != PackageManager.PERMISSION_GRANTED) return;
