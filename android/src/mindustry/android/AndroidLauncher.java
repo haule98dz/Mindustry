@@ -332,6 +332,25 @@ public class AndroidLauncher extends AndroidApplication{
 
     @Override
     protected void onPause(){
+        // Auto-save active game on app pause (backgrounding, switching apps, locking device)
+        try{
+            if(control != null && control.saves != null && state != null && state.isGame() && !state.gameOver && !disableSave && !net.client()){
+                if(state.isCampaign() && state.getPlanet() != null){
+                    state.getPlanet().saveStats();
+                }
+                mindustry.game.Saves.SaveSlot current = control.saves.getCurrent();
+                if(current != null && current.isAutosave()){
+                    current.save();
+                    Log.info("[AndroidLauncher] Auto-saved active game on onPause: @", current.getName());
+                }
+                if(Core.settings != null){
+                    Core.settings.manualSave();
+                }
+            }
+        }catch(Throwable t){
+            Log.err("[AndroidLauncher] Failed to auto-save on onPause", t);
+        }
+
         super.onPause();
     }
 
