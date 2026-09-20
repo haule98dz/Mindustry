@@ -8,7 +8,6 @@ import android.content.pm.*;
 import android.net.*;
 import android.os.*;
 import android.provider.*;
-import android.text.*;
 import android.widget.*;
 import arc.func.*;
 import arc.util.*;
@@ -87,6 +86,12 @@ public class AndroidStorageHelper{
         return saved == null || saved.equals(getDefaultDataDir(context).getAbsolutePath());
     }
 
+    public static boolean isSetupNeeded(Context context){
+        if(!isSetupCompleted(context)) return true;
+        if(!isUsingDefault(context) && !hasStoragePermission(context)) return true;
+        return false;
+    }
+
     public static File getDataDir(Context context){
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         String custom = prefs.getString(KEY_CUSTOM_DATA_DIR, null);
@@ -108,24 +113,30 @@ public class AndroidStorageHelper{
     }
 
     public static void checkAndSetupStorage(Activity activity, Runnable onReady){
-        if(isSetupCompleted(activity)){
-            if(isUsingDefault(activity) || hasStoragePermission(activity)){
-                onReady.run();
-                return;
-            }
-        }
+        activity.runOnUiThread(() -> {
+            if(isActivityDead(activity)) return;
 
-        if(!hasStoragePermission(activity)){
-            promptPermissionDialog(activity, onReady);
-        }else{
-            promptChooseFolder(activity, true, folder -> onReady.run());
-        }
+            if(isSetupCompleted(activity)){
+                if(isUsingDefault(activity) || hasStoragePermission(activity)){
+                    onReady.run();
+                    return;
+                }
+            }
+
+            if(!hasStoragePermission(activity)){
+                promptPermissionDialog(activity, onReady);
+            }else{
+                promptChooseFolder(activity, true, folder -> onReady.run());
+            }
+        });
     }
 
     public static void promptPermissionDialog(Activity activity, Runnable onReady){
+        if(isActivityDead(activity)) return;
+
         new AlertDialog.Builder(activity)
             .setTitle("Storage Access & Data Sync")
-            .setMessage("To allow syncing Mindustry game data (saves, maps, schematics) between your devices (e.g., using Syncthing), Mindustry needs permission to access a shared folder outside the restricted Android sandbox.\n\nWould you like to grant 'All files access' to select a syncable folder, or use the default isolated folder?")
+            .setMessage("To allow syncing Mindustry game data (saves, maps, schematics) between your devices (e.g., using Syncthing), Mindustry needs permission to access a shared folder outside the restricted Android sandbox.\n\nWould you like to grant 'All files access' to select a syncable folder, or continue using the default isolated folder?")
             .setCancelable(false)
             .setPositiveButton("Grant Permission", (dialog, which) -> {
                 pendingPermissionCallback = onReady;
@@ -141,6 +152,8 @@ public class AndroidStorageHelper{
     }
 
     public static void promptChooseFolder(Activity activity, boolean isInitialSetup, Cons<File> onFolderChosen){
+        if(isActivityDead(activity)) return;
+
         pendingFolderCallback = onFolderChosen;
         pendingIsInitial = isInitialSetup;
 
@@ -188,6 +201,8 @@ public class AndroidStorageHelper{
     }
 
     private static void promptCustomPathDialog(Activity activity, boolean isInitialSetup, Cons<File> onFolderChosen){
+        if(isActivityDead(activity)) return;
+
         final EditText input = new EditText(activity);
         input.setSingleLine(true);
         input.setText(getRecommendedSyncDir().getAbsolutePath());
@@ -221,6 +236,8 @@ public class AndroidStorageHelper{
     }
 
     public static void selectFolder(Activity activity, File folder, boolean isInitialSetup, Cons<File> onFolderChosen){
+        if(isActivityDead(activity)) return;
+
         try{
             if(!folder.exists() && !folder.mkdirs()){
                 throw new IOException("Unable to create directory");
@@ -283,95 +300,107 @@ public class AndroidStorageHelper{
     }
 
     public static void handleResume(Activity activity){
-        if(waitingForPermission && !handledResult){
-            if(hasStoragePermission(activity)){
-                waitingForPermission = false;
-                promptChooseFolder(activity, true, folder -> {
-                    if(pendingPermissionCallback != null){
-                        pendingPermissionCallback.run();
-                        pendingPermissionCallback = null;
-                    }
-                });
+        activity.runOnUiThread(() -> {
+            if(isActivityDead(activity)) return;
+
+            if(waitingForPermission && !handledResult){
+                if(hasStoragePermission(activity)){
+                    waitingForPermission = false;
+                    promptChooseFolder(activity, true, folder -> {
+                        if(pendingPermissionCallback != null){
+                            pendingPermissionCallback.run();
+                            pendingPermissionCallback = null;
+                        }
+                    });
+                }
             }
-        }
-        handledResult = false;
+            handledResult = false;
+        });
     }
 
     public static void handleActivityResult(Activity activity, int requestCode, int resultCode, Intent data){
-        if(requestCode == STORAGE_PERM_REQUEST_CODE){
-            handledResult = true;
-            waitingForPermission = false;
-            if(hasStoragePermission(activity)){
-                promptChooseFolder(activity, true, folder -> {
-                    if(pendingPermissionCallback != null){
-                        pendingPermissionCallback.run();
-                        pendingPermissionCallback = null;
-                    }
-                });
-            }else{
-                new AlertDialog.Builder(activity)
-                    .setTitle("Permission Not Granted")
-                    .setMessage("Storage permission was not granted. Mindustry will not be able to save data to a shared folder without this permission.\n\nWould you like to try again or continue using the default isolated folder?")
-                    .setCancelable(false)
-                    .setPositiveButton("Try Again", (dialog, which) -> requestStoragePermission(activity))
-                    .setNegativeButton("Use Default Folder", (dialog, which) -> {
-                        setDataDir(activity, getDefaultDataDir(activity).getAbsolutePath());
+        activity.runOnUiThread(() -> {
+            if(isActivityDead(activity)) return;
+
+            if(requestCode == STORAGE_PERM_REQUEST_CODE){
+                handledResult = true;
+                waitingForPermission = false;
+                if(hasStoragePermission(activity)){
+                    promptChooseFolder(activity, true, folder -> {
                         if(pendingPermissionCallback != null){
                             pendingPermissionCallback.run();
                             pendingPermissionCallback = null;
                         }
-                    })
-                    .show();
-            }
-        }else if(requestCode == STORAGE_FOLDER_PICKER_REQUEST_CODE){
-            if(resultCode == Activity.RESULT_OK && data != null && data.getData() != null){
-                Uri treeUri = data.getData();
-                String path = getPathFromTreeUri(treeUri);
-                if(path != null){
-                    selectFolder(activity, new File(path), pendingIsInitial, pendingFolderCallback);
+                    });
                 }else{
                     new AlertDialog.Builder(activity)
-                        .setTitle("Unrecognized Location")
-                        .setMessage("Could not resolve a direct file path from the selected location. Please choose a folder on primary storage or SD card, or use the recommended /sdcard/Mindustry folder.")
-                        .setPositiveButton("Choose Again", (dialog, which) -> promptChooseFolder(activity, pendingIsInitial, pendingFolderCallback))
+                        .setTitle("Permission Not Granted")
+                        .setMessage("Storage permission was not granted. Mindustry will not be able to save data to a shared folder without this permission.\n\nWould you like to try again or continue using the default isolated folder?")
+                        .setCancelable(false)
+                        .setPositiveButton("Try Again", (dialog, which) -> requestStoragePermission(activity))
+                        .setNegativeButton("Use Default Folder", (dialog, which) -> {
+                            setDataDir(activity, getDefaultDataDir(activity).getAbsolutePath());
+                            if(pendingPermissionCallback != null){
+                                pendingPermissionCallback.run();
+                                pendingPermissionCallback = null;
+                            }
+                        })
                         .show();
                 }
-            }else if(pendingIsInitial){
-                promptChooseFolder(activity, true, pendingFolderCallback);
+            }else if(requestCode == STORAGE_FOLDER_PICKER_REQUEST_CODE){
+                if(resultCode == Activity.RESULT_OK && data != null && data.getData() != null){
+                    Uri treeUri = data.getData();
+                    String path = getPathFromTreeUri(treeUri);
+                    if(path != null){
+                        selectFolder(activity, new File(path), pendingIsInitial, pendingFolderCallback);
+                    }else{
+                        new AlertDialog.Builder(activity)
+                            .setTitle("Unrecognized Location")
+                            .setMessage("Could not resolve a direct file path from the selected location. Please choose a folder on primary storage or SD card, or use the recommended /sdcard/Mindustry folder.")
+                            .setPositiveButton("Choose Again", (dialog, which) -> promptChooseFolder(activity, pendingIsInitial, pendingFolderCallback))
+                            .show();
+                    }
+                }else if(pendingIsInitial){
+                    promptChooseFolder(activity, true, pendingFolderCallback);
+                }
             }
-        }
+        });
     }
 
     public static void handlePermissionsResult(Activity activity, int requestCode, String[] permissions, int[] grantResults){
-        if(requestCode == STORAGE_PERM_REQUEST_CODE){
-            boolean granted = grantResults.length > 0;
-            for(int res : grantResults){
-                if(res != PackageManager.PERMISSION_GRANTED) granted = false;
-            }
+        activity.runOnUiThread(() -> {
+            if(isActivityDead(activity)) return;
 
-            if(granted){
-                promptChooseFolder(activity, true, folder -> {
-                    if(pendingPermissionCallback != null){
-                        pendingPermissionCallback.run();
-                        pendingPermissionCallback = null;
-                    }
-                });
-            }else{
-                new AlertDialog.Builder(activity)
-                    .setTitle("Permission Not Granted")
-                    .setMessage("Storage permission was denied. Would you like to try again or use the default folder?")
-                    .setCancelable(false)
-                    .setPositiveButton("Try Again", (dialog, which) -> requestStoragePermission(activity))
-                    .setNegativeButton("Use Default", (dialog, which) -> {
-                        setDataDir(activity, getDefaultDataDir(activity).getAbsolutePath());
+            if(requestCode == STORAGE_PERM_REQUEST_CODE){
+                boolean granted = grantResults.length > 0;
+                for(int res : grantResults){
+                    if(res != PackageManager.PERMISSION_GRANTED) granted = false;
+                }
+
+                if(granted){
+                    promptChooseFolder(activity, true, folder -> {
                         if(pendingPermissionCallback != null){
                             pendingPermissionCallback.run();
                             pendingPermissionCallback = null;
                         }
-                    })
-                    .show();
+                    });
+                }else{
+                    new AlertDialog.Builder(activity)
+                        .setTitle("Permission Not Granted")
+                        .setMessage("Storage permission was denied. Would you like to try again or use the default folder?")
+                        .setCancelable(false)
+                        .setPositiveButton("Try Again", (dialog, which) -> requestStoragePermission(activity))
+                        .setNegativeButton("Use Default", (dialog, which) -> {
+                            setDataDir(activity, getDefaultDataDir(activity).getAbsolutePath());
+                            if(pendingPermissionCallback != null){
+                                pendingPermissionCallback.run();
+                                pendingPermissionCallback = null;
+                            }
+                        })
+                        .show();
+                }
             }
-        }
+        });
     }
 
     public static String getPathFromTreeUri(Uri uri){
@@ -438,5 +467,9 @@ public class AndroidStorageHelper{
                 }
             }
         }
+    }
+
+    private static boolean isActivityDead(Activity activity){
+        return activity == null || activity.isFinishing() || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed());
     }
 }

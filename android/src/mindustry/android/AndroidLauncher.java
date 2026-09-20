@@ -19,6 +19,7 @@ import mindustry.*;
 import mindustry.game.EventType.*;
 import mindustry.net.*;
 import mindustry.ui.*;
+import arc.graphics.Gl;
 import mindustry.ui.FileChooser.*;
 import mindustry.ui.dialogs.*;
 import mindustry.gen.*;
@@ -35,7 +36,6 @@ public class AndroidLauncher extends AndroidApplication{
     boolean doubleScaleTablets = true;
     FileChooserDialog chooser;
     Runnable permCallback;
-    boolean gameStarted = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState){
@@ -58,17 +58,74 @@ public class AndroidLauncher extends AndroidApplication{
             Scl.setAddition(0.5f);
         }
 
-        AndroidStorageHelper.checkAndSetupStorage(this, this::startGame);
-    }
-
-    private void startGame(){
-        if(gameStarted) return;
-        gameStarted = true;
-
-        File chosenDataDir = AndroidStorageHelper.getDataDir(this);
-        System.setProperty("mindustry.data.dir", chosenDataDir.getAbsolutePath());
-
         initialize(new ClientLauncher(){
+            boolean storageReady = false;
+
+            @Override
+            public void setup(){
+                if(AndroidStorageHelper.isSetupNeeded(AndroidLauncher.this)){
+                    AndroidStorageHelper.checkAndSetupStorage(AndroidLauncher.this, () -> {
+                        applyDataDirectory();
+                        Core.app.post(() -> {
+                            storageReady = true;
+                            super.setup();
+                        });
+                    });
+                }else{
+                    applyDataDirectory();
+                    storageReady = true;
+                    super.setup();
+                }
+            }
+
+            private void applyDataDirectory(){
+                try{
+                    File chosen = AndroidStorageHelper.getDataDir(AndroidLauncher.this);
+                    Fi data = Core.files.absolute(chosen.getAbsolutePath());
+                    Core.settings.setDataDirectory(data);
+                    System.setProperty("mindustry.data.dir", chosen.getAbsolutePath());
+
+                    //delete unused cache folder to free up space
+                    try{
+                        Fi cache = Core.settings.getDataDirectory().child("cache");
+                        if(cache.exists()){
+                            cache.deleteDirectory();
+                        }
+                    }catch(Throwable t){
+                        Log.err("Failed to delete cached folder", t);
+                    }
+
+                    //move to internal storage if there's no file indicating that it moved
+                    if(!Core.files.local("files_moved").exists()){
+                        Log.info("Moving files to external storage...");
+
+                        try{
+                            Fi src = Core.files.absolute(Core.files.getLocalStoragePath());
+                            for(Fi fi : src.list()){
+                                fi.copyTo(data);
+                            }
+                            Core.files.local("files_moved").writeString("files moved to " + data);
+                            Core.files.local("files_moved_103").writeString("files moved again");
+                            Log.info("Files moved.");
+                        }catch(Throwable t){
+                            Log.err("Failed to move files!");
+                            t.printStackTrace();
+                        }
+                    }
+                }catch(Throwable e){
+                    Log.err(e);
+                }
+            }
+
+            @Override
+            public void update(){
+                if(!storageReady){
+                    Gl.clearColor(0f, 0f, 0f, 1f);
+                    Gl.clear(Gl.colorBufferBit);
+                    return;
+                }
+                super.update();
+            }
 
             @Override
             public void hide(){
@@ -240,45 +297,6 @@ public class AndroidLauncher extends AndroidApplication{
             handleIntent(intent);
             setupStorageSettings();
         });
-
-        try{
-            //data folder
-            Fi data = Core.files.absolute(chosenDataDir.getAbsolutePath());
-            Core.settings.setDataDirectory(data);
-
-            //delete unused cache folder to free up space
-            try{
-                Fi cache = Core.settings.getDataDirectory().child("cache");
-                if(cache.exists()){
-                    cache.deleteDirectory();
-                }
-            }catch(Throwable t){
-                Log.err("Failed to delete cached folder", t);
-            }
-
-            //move to internal storage if there's no file indicating that it moved
-            if(!Core.files.local("files_moved").exists()){
-                Log.info("Moving files to external storage...");
-
-                try{
-                    //current local storage folder
-                    Fi src = Core.files.absolute(Core.files.getLocalStoragePath());
-                    for(Fi fi : src.list()){
-                        fi.copyTo(data);
-                    }
-                    //create marker
-                    Core.files.local("files_moved").writeString("files moved to " + data);
-                    Core.files.local("files_moved_103").writeString("files moved again");
-                    Log.info("Files moved.");
-                }catch(Throwable t){
-                    Log.err("Failed to move files!");
-                    t.printStackTrace();
-                }
-            }
-        }catch(Exception e){
-            //print log but don't crash
-            Log.err(e);
-        }
     }
 
     private void setupStorageSettings(){
@@ -314,16 +332,12 @@ public class AndroidLauncher extends AndroidApplication{
 
     @Override
     protected void onPause(){
-        if(graphics != null && input != null){
-            super.onPause();
-        }
+        super.onPause();
     }
 
     @Override
     protected void onResume(){
-        if(graphics != null && input != null){
-            super.onResume();
-        }
+        super.onResume();
         AndroidStorageHelper.handleResume(this);
     }
 
